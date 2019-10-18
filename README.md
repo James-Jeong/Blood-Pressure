@@ -1,4 +1,3 @@
 # Blood-Pressure
 
-POSIX TIMER
-PTHREAD mutex, condition
+POSIX TIMER / PTHREAD mutex, condition
