@@ -8,33 +8,53 @@
 #define SIGTIMER SIGRTMAX
 #define Q_SIZE 500
 
-static timer_t timer;
+static timer_t timer; /**< Timer variable (static) */
 
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 // @@@@@@@@@@@@@@@@@@@@@@@ Structure
 
+/**
+  * @brief Node structure
+  * @member struct node_s* prev
+  * @member struct node_s* next
+  * @member int data
+  */
 typedef struct node_s node_t
 struct node_s
 {
-	struct node_s *prev;
-	struct node_s *next;
-	int data;
+	struct node_s *prev; /**< Previous Node */
+	struct node_s *next; /**< Next Node */
+	int data; /**< Node's current data */
 };
 
+/**
+  * @brief Queue structure
+  * @member node_t* front_node
+  * @member node_t* rear_node
+  * @member int cnt
+  */
 typedef struct queue_s queue_t
 struct queue_s{
-	node_t *front_node;
-	node_t *rear_node;
-	int cnt;
+	node_t *front_node; /**< Front Node of queue */
+	node_t *rear_node; /**< Rear Node of queue */
+	int cnt; /**< Total count of Node in queue */
 };
 
+/**
+  * @brief BP structure
+  * @member queue_t* queue
+  * @member pthread_mutex_t mutex;
+  * @member pthread_mutex_t mutex2;
+  * @member pthread_cond_t cond_data;
+  * @member pthread_cond_t cond_bp;
+  */
 typedef struct bp_s bp_t;
 struct bp_s{
-	queue_t *queue;
-	pthread_mutex_t mutex;
-	pthread_mutex_t mutex2;
-	pthread_cond_t cond_data;
-	pthread_cond_t cond_bp;
+	queue_t *queue; /**< A queue of BP */
+	pthread_mutex_t mutex; /**< Mutex for BP's data processing */
+	pthread_mutex_t mutex2; /**< Mutex2 for queue's work */
+	pthread_cond_t cond_data; /**< Cond_data for BP's data processing */
+	pthread_cond_t cond_bp; /**< Cond_bp for BP's data processing */
 };
 
 // @@@@@@@@@@@@@@@@@@@@@@@
@@ -43,6 +63,10 @@ struct bp_s{
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 // @@@@@@@@@@@@@@@@@@@@@@@ BP functions
 
+/**
+  * @brief Initialize a new BP object
+  * @return bp_t*
+  */
 bp_t* bp_init(){
 	bp_t *bp = ( bp_t*)malloc( sizeof( bp_t));
 	bp->queue = queue_init();
@@ -64,6 +88,10 @@ bp_t* bp_init(){
 	retturn bp;
 }
 
+/**
+  * @brief Destroy the BP object
+  * @param bp_t* bp
+  */
 void bp_destroy( bp_t *bp){
 	if( bp->queue){
 		queue_destory( bp->queue);	
@@ -74,29 +102,38 @@ void bp_destroy( bp_t *bp){
 	pthread_cond_destroy( &bp->cond_bp);
 	free( bp);
 }
-
+/**
+  * @brief Bp produces data & insert the data to queue
+  * @param void* bp
+  * @return void*
+  */
 void* bp_produce_data( void* bp){
 	int turn = 0, random = 0;
 	queue_t* queue = (( queue_t*)( bp))->queue;
 	while( 1){
-		pthread_mutex_lock( &mutex);
-		pthread_cond_wait( &cond_data, &mutex);
+		pthread_mutex_lock( &bp->mutex);
+		pthread_cond_wait( &bp->cond_data, &bp->mutex);
 		if( turn % 2 == 0){ random = rand() % 30 + 60; }
 		else{ random = rand() % 40 + 110; }
 		queue = queue_insert_data( queue, random);
 		turn++;
-		if( turn == 10){ turn = 0; pthread_cond_signal( &cond_bp); }
-		pthread_mutex_unlock( &mutex);
+		if( turn == 10){ turn = 0; pthread_cond_signal( &bp->cond_bp); }
+		pthread_mutex_unlock( &bp->mutex);
 	}
 }
 
+/**
+  * @brief Bp consumes data & delete the data from queue if the queue is full
+  * @param void* bp
+  * @return void*
+  */
 void* bp_consume_data( void* bp){
 	int turn = 0, avg = 0, cnt = 0, data = 0;
 	struct tm *t; timer_t timer;
 	queue_t* queue = ((queue_t*)( bp))->queue;
 	while( 1){
-		pthread_mutex_lock( &mutex);
-		pthread_cond_wait( &cond_bp, &mutex);
+		pthread_mutex_lock( &bp->mutex);
+		pthread_cond_wait( &bp->cond_bp, &bp->mutex);
 		avg = 0; cnt = 0;
 		while( queue->cnt != 0){
 			data = queue->front_node->data;
@@ -125,10 +162,14 @@ void* bp_consume_data( void* bp){
 			turn++;
 			if( turn == 10){ turn = 0;}
 		}
-		pthread_mutex_unlock( &mutex);
+		pthread_mutex_unlock( &bp->mutex);
 	}
 }
 
+/**
+  * @brief BP creates two threads for handling data
+  * @param bp_t* bp
+  */
 void bp_process_data( bp_t *bp){
 	if(( pthread_create( &da_thread, NULL, bp_produce_data, ( void*)( bp))) != 0){
 		perror( "\nda_thread thread CREATE ERROR: "); exit( -1);
@@ -144,6 +185,10 @@ void bp_process_data( bp_t *bp){
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 // @@@@@@@@@@@@@@@@@@@@@@@ Queue functions
 
+/**
+  * @brief Initialize a new queue object
+  * @return queue_t*
+  */
 queue_t* queue_init(){
 	queue_t *queue = ( queue_t*)malloc( sizeof( queue_t));
 	if( queue == NULL){
@@ -156,6 +201,10 @@ queue_t* queue_init(){
 	return queue;
 }
 
+/**
+  * @brief Destroy the queue object
+  * @param queue_t* queue
+  */
 void queue_destroy( queue_t *queue){
 	if( queue->front_node){
 		free( queue->front_node);
@@ -166,11 +215,17 @@ void queue_destroy( queue_t *queue){
 	free( queue);
 }
 
+/**
+  * @brief Insert data to queue
+  * @param queue_t* queue
+  * @param int i
+  * @return queue_t*
+  */
 queue_t* queue_insert_data( queue_t *queue, int i){
 	queue_t* temp_q = queue;
 	node_t* temp_n = NULL;
 
-	pthread_mutex_lock( &mutex2);
+	pthread_mutex_lock( &bp->mutex2);
 	temp_n = ( node_t*)malloc( sizeof( node_t));
 	temp_n->data = i;
 	if( temp_q->cnt == 0){
@@ -183,13 +238,18 @@ queue_t* queue_insert_data( queue_t *queue, int i){
 	}
 	temp_q->rear_node = temp_n;
 	temp_q->cnt++;
-	pthread_mutex_unlock( &mutex2);
+	pthread_mutex_unlock( &bp->mutex2);
 	return temp_q;
 }
 
+/**
+  * @brief Delete data from queue
+  * @param queue_t* queue
+  * @return int
+  */
 int queue_delete_data( queue_t* queue)
 {
-	pthread_mutex_lock( &mutex2);
+	pthread_mutex_lock( &bp->mutex2);
 	if( queue->cnt <= 0){ return -1; }
 	queue_t* temp_q = queue;
 	if( temp_q->cnt == 1){
@@ -204,7 +264,7 @@ int queue_delete_data( queue_t* queue)
 		temp_q->front_node->prev = NULL;
 		temp_q->cnt--;
 	}
-	pthread_mutex_unlock( &mutex2);
+	pthread_mutex_unlock( &bp->mutex2);
 	return 1;
 }
 
@@ -214,6 +274,11 @@ int queue_delete_data( queue_t* queue)
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 // @@@@@@@@@@@@@@@@@@@@@@@ Signal Timer functions
 
+/**
+  * @brief Set timer's information
+  * @param int sig_no
+  * @param int sec
+  */
 void set_timer( int sig_no, int sec){
 	struct sigevent sig_ev;
 	struct itimerspec itval, oitval;
@@ -234,9 +299,15 @@ void set_timer( int sig_no, int sec){
 	else{ perror( "\ntimer_create ERROR: "); exit( -1); }
 }
 
+/**
+  * @brief Set signal handler
+  * @param int sig_no
+  * @param siginfo_t* info
+  * @param void* context
+  */
 void signal_handler( int sig_no, siginfo_t *info, void* context){
 	if( sig_no == SIGTIMER){
-		pthread_cond_signal( &cond_data);
+		pthread_cond_signal( &bp->cond_data);
 	}
 	else if( sig_no == SIGINT){
 		timer_delete( timer);
@@ -244,6 +315,9 @@ void signal_handler( int sig_no, siginfo_t *info, void* context){
 	}
 }
 
+/**
+  * @brief Manage all signal information
+  */
 void set_signal(){
 	struct sigaction sig_act;
 	sigemptyset( &sig_act.sa_mask);
@@ -254,14 +328,17 @@ void set_signal(){
 	set_timer( SIGTIMER, 100);
 }
 
-
-
 // @@@@@@@@@@@@@@@@@@@@@@@
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 // @@@@@@@@@@@@@@@@@@@@@@@ Main function
 
+/**
+  * @brief Main function
+  * @      Create BP object & Handle data
+  * @return int
+  */
 int main(){
 	bp_t *bp = bp_init();
 	pthread_t da_thread, bp_thread;
