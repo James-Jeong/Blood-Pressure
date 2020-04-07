@@ -8,12 +8,10 @@
 #define SIGTIMER SIGRTMAX
 #define Q_SIZE 500
 
-pthread_mutex_t mutex, mutex2;
-pthread_cond_t cond_data, cond_bp;
-timer_t timer;
+static timer_t timer;
 
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-// @@@@@@@@@@@@@@@@@@@@@@@ Queue code
+// @@@@@@@@@@@@@@@@@@@@@@@ Structure
 
 typedef struct node_s node_t
 struct node_s
@@ -25,138 +23,86 @@ struct node_s
 
 typedef struct queue_s queue_t
 struct queue_s{
-	node_t *front_Node;
-	node_t *rear_Node;
+	node_t *front_node;
+	node_t *rear_node;
 	int cnt;
 };
 
-typedef struct arg_s arg_t
-struct arg{
-	queue_t *my_q;
-	int th_id;
+typedef struct bp_s bp_t;
+struct bp_s{
+	queue_t *queue;
+	pthread_mutex_t mutex;
+	pthread_mutex_t mutex2;
+	pthread_cond_t cond_data;
+	pthread_cond_t cond_bp;
 };
 
-
-void InitQ( queue_t *set_q)
-{
-	set_q->front_Node = NULL;
-	set_q->rear_Node = NULL;
-	set_q->cnt = 0;
-}
-
-queue_t* insertQ( queue_t *queue, int i)
-{
-	queue_t* temp_q = queue;
-	node_t* temp_n = NULL;
-
-	pthread_mutex_lock( &mutex2);
-	temp_n = ( node_t*)malloc( sizeof( node_t));
-	temp_n->data = i;
-	if( temp_q->cnt == 0){
-		temp_q->front_Node = temp_n;
-		temp_q->rear_Node = NULL;
-	}
-	else{
-		temp_q->rear_Node->next = temp_n;
-		temp_n->prev = temp_q->rear_Node;
-	}
-	temp_q->rear_Node = temp_n;
-	temp_q->cnt++;
-	pthread_mutex_unlock( &mutex2);
-	return temp_q;
-}
-
-int deleteQ( queue_t* queue)
-{
-	pthread_mutex_lock( &mutex2);
-	if( queue->cnt <= 0){ return -1; }
-	queue_t* temp_q = queue;
-	if( temp_q->cnt == 1){
-		free( temp_q->front_Node);
-		temp_q->front_Node = NULL;
-		temp_q->rear_Node = NULL;
-		temp_q->cnt = 0;
-	}
-	else{
-		temp_q->front_Node = temp_q->front_Node->next;
-		free( temp_q->front_Node->prev);
-		temp_q->front_Node->prev = NULL;
-		temp_q->cnt--;
-	}
-	pthread_mutex_unlock( &mutex2);
-	return 1;
-}
-
 // @@@@@@@@@@@@@@@@@@@@@@@
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-// @@@@@@@@@@@@@@@@@@@@@@@ Signal Timer code
+// @@@@@@@@@@@@@@@@@@@@@@@ BP functions
 
-void set_Timer( int sig_no, int sec){
-	struct sigevent sig_ev;
-	struct itimerspec itval, oitval;
-
-	sig_ev.sigev_notify = SIGEV_SIGNAL;
-	sig_ev.sigev_signo = sig_no;
-	sig_ev.sigev_value.sival_ptr = &timer;
-
-	if(timer_create( CLOCK_REALTIME, &sig_ev, &timer) == 0){
-		itval.it_value.tv_sec = 0;
-		itval.it_value.tv_nsec = ( long)( sec / 10) * ( 1000000L);
-		itval.it_interval.tv_sec = 0;
-		itval.it_interval.tv_nsec = ( long)( sec / 10) * ( 1000000L);
-		if( timer_settime( timer, 0, &itval, &oitval) != 0){
-			perror( "\ntime_settime ERROR: "); exit( -1);
-		}
+bp_t* bp_init(){
+	bp_t *bp = ( bp_t*)malloc( sizeof( bp_t));
+	bp->queue = queue_init();
+	if( bp->queue == NULL){
+		printf("(bp) { Fail to init bp's queue }\n");
+		return NULL;
 	}
-	else{ perror( "\ntimer_create ERROR: "); exit( -1); }
+	
+	int mutex_state = pthread_mutex_init( &bp->mutex, NULL);
+	if( mutex_state){ perror( "\nmutex CREATE ERROR: "); exit( -1); }
+	mutex_state = pthread_mutex_init( &bp->mutex2, NULL);
+	if( mutex_state){ perror( "\nmutex2 CREATE ERROR: "); exit( -1); }
+
+	int cond_state = pthread_cond_init( &bp->cond_data, NULL);
+	if( cond_state){ perror( "\ncond_data CREATE ERROR: "); exit( -1); }
+	cond_state = pthread_cond_init( &bp->cond_bp, NULL);
+	if( cond_state){ perror( "\ncond_bp CREATE ERROR: "); exit( -1); }
+
+	retturn bp;
 }
 
-void signal_Handler( int sig_no, siginfo_t *info, void* context){
-	if( sig_no == SIGTIMER){
-		pthread_cond_signal( &cond_data);
+void bp_destroy( bp_t *bp){
+	if( bp->queue){
+		queue_destory( bp->queue);	
 	}
-	else if( sig_no == SIGINT){
-		timer_delete( timer);
-		perror( "\nCtrl + C: "); exit( 1);
-	}
+	pthread_mutex_destroy( &bp->mutex);
+	pthread_mutex_destroy( &bp->mutex);
+	pthread_cond_destroy( &bp->cond_data);
+	pthread_cond_destroy( &bp->cond_bp);
+	free( bp);
 }
 
-// @@@@@@@@@@@@@@@@@@@@@@@
-// @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-
-// @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
-// @@@@@@@@@@@@@@@@@@@@@@@ Thread functions code
-
-void* data_Acquisition( void* args){
+void* bp_produce_data( void* bp){
 	int turn = 0, random = 0;
-	queue_t* queue = ( queue_t*)( args);
+	queue_t* queue = (( queue_t*)( bp))->queue;
 	while( 1){
 		pthread_mutex_lock( &mutex);
 		pthread_cond_wait( &cond_data, &mutex);
 		if( turn % 2 == 0){ random = rand() % 30 + 60; }
 		else{ random = rand() % 40 + 110; }
-		queue = insertQ( queue, random);
+		queue = queue_insert_data( queue, random);
 		turn++;
 		if( turn == 10){ turn = 0; pthread_cond_signal( &cond_bp); }
 		pthread_mutex_unlock( &mutex);
 	}
 }
 
-void* bp_Processing( void* args){
+void* bp_consume_data( void* bp){
 	int turn = 0, avg = 0, cnt = 0, data = 0;
 	struct tm *t; timer_t timer;
-	queue_t* queue = (queue_t*)(args);
+	queue_t* queue = ((queue_t*)( bp))->queue;
 	while( 1){
 		pthread_mutex_lock( &mutex);
 		pthread_cond_wait( &cond_bp, &mutex);
 		avg = 0; cnt = 0;
 		while( queue->cnt != 0){
-			data = queue->front_Node->data;
+			data = queue->front_node->data;
 			avg += data;
 			//printf( "DATA: %d\n", data);
-			deleteQ( queue);
+			queue_delete_data( queue);
 			cnt++;
 		}
 		if(avg != 0){
@@ -183,43 +129,149 @@ void* bp_Processing( void* args){
 	}
 }
 
+void bp_process_data( bp_t *bp){
+	if(( pthread_create( &da_thread, NULL, bp_produce_data, ( void*)( bp))) != 0){
+		perror( "\nda_thread thread CREATE ERROR: "); exit( -1);
+	}
+	if(( pthread_create( &bp_thread, NULL, bp_consume_data, ( void*)( bp))) != 0){
+		perror( "\nbp_thread thread CREATE ERROR: "); exit( -1);
+	}
+}
+
 // @@@@@@@@@@@@@@@@@@@@@@@
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-int main(){
-	pthread_t da_thread, bp_thread;
-	int mutex_state = pthread_mutex_init( &mutex, NULL);
-	if( mutex_state){ perror( "\nmutex CREATE ERROR: "); exit( -1); }
-	mutex_state = pthread_mutex_init(&mutex2, NULL);
-	if( mutex_state){ perror( "\nmutex2 CREATE ERROR: "); exit( -1); }
+// @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+// @@@@@@@@@@@@@@@@@@@@@@@ Queue functions
 
-	int cond_state = pthread_cond_init(&cond_data, NULL);
-	if( cond_state){ perror( "\ncond_data CREATE ERROR: "); exit( -1); }
-	cond_state = pthread_cond_init(&cond_bp, NULL);
-	if( cond_state){ perror( "\ncond_bp CREATE ERROR: "); exit( -1); }
-
-	queue_t* main_q = ( queue_t*)malloc( sizeof( queue_t));
-	InitQ( main_q);
-	arg_t* arg = ( arg_t*)malloc( sizeof( arg_t));
-	arg->my_q = main_q; arg->th_id = 1;
-	if(( pthread_create( &da_thread, NULL, data_Acquisition, ( void*)( arg))) != 0){
-		perror( "\nda_thread thread CREATE ERROR: "); exit( -1);
+queue_t* queue_init(){
+	queue_t *queue = ( queue_t*)malloc( sizeof( queue_t));
+	if( queue == NULL){
+		printf("(queue) { Fail to init queue }\n");
+		return NULL;
 	}
-	if(( pthread_create( &bp_thread, NULL, bp_Processing, ( void*)( arg))) != 0){
-		perror( "\nbp_thread thread CREATE ERROR: "); exit( -1);
-	}
+	queue->front_node = NULL;
+	queue->rear_node = NULL;
+	queue->cnt = 0;
+	return queue;
+}
 
+void queue_destroy( queue_t *queue){
+	if( queue->front_node){
+		free( queue->front_node);
+	}
+	if( queue->rear_node){
+		free( queue->rear_node);
+	}
+	free( queue);
+}
+
+queue_t* queue_insert_data( queue_t *queue, int i){
+	queue_t* temp_q = queue;
+	node_t* temp_n = NULL;
+
+	pthread_mutex_lock( &mutex2);
+	temp_n = ( node_t*)malloc( sizeof( node_t));
+	temp_n->data = i;
+	if( temp_q->cnt == 0){
+		temp_q->front_node = temp_n;
+		temp_q->rear_node = NULL;
+	}
+	else{
+		temp_q->rear_node->next = temp_n;
+		temp_n->prev = temp_q->rear_node;
+	}
+	temp_q->rear_node = temp_n;
+	temp_q->cnt++;
+	pthread_mutex_unlock( &mutex2);
+	return temp_q;
+}
+
+int queue_delete_data( queue_t* queue)
+{
+	pthread_mutex_lock( &mutex2);
+	if( queue->cnt <= 0){ return -1; }
+	queue_t* temp_q = queue;
+	if( temp_q->cnt == 1){
+		free( temp_q->front_node);
+		temp_q->front_node = NULL;
+		temp_q->rear_node = NULL;
+		temp_q->cnt = 0;
+	}
+	else{
+		temp_q->front_node = temp_q->front_node->next;
+		free( temp_q->front_node->prev);
+		temp_q->front_node->prev = NULL;
+		temp_q->cnt--;
+	}
+	pthread_mutex_unlock( &mutex2);
+	return 1;
+}
+
+// @@@@@@@@@@@@@@@@@@@@@@@
+// @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+// @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+// @@@@@@@@@@@@@@@@@@@@@@@ Signal Timer functions
+
+void set_timer( int sig_no, int sec){
+	struct sigevent sig_ev;
+	struct itimerspec itval, oitval;
+
+	sig_ev.sigev_notify = SIGEV_SIGNAL;
+	sig_ev.sigev_signo = sig_no;
+	sig_ev.sigev_value.sival_ptr = &timer;
+
+	if(timer_create( CLOCK_REALTIME, &sig_ev, &timer) == 0){
+		itval.it_value.tv_sec = 0;
+		itval.it_value.tv_nsec = ( long)( sec / 10) * ( 1000000L);
+		itval.it_interval.tv_sec = 0;
+		itval.it_interval.tv_nsec = ( long)( sec / 10) * ( 1000000L);
+		if( timer_settime( timer, 0, &itval, &oitval) != 0){
+			perror( "\ntime_settime ERROR: "); exit( -1);
+		}
+	}
+	else{ perror( "\ntimer_create ERROR: "); exit( -1); }
+}
+
+void signal_handler( int sig_no, siginfo_t *info, void* context){
+	if( sig_no == SIGTIMER){
+		pthread_cond_signal( &cond_data);
+	}
+	else if( sig_no == SIGINT){
+		timer_delete( timer);
+		perror( "\nCtrl + C: "); exit( 1);
+	}
+}
+
+void set_signal(){
 	struct sigaction sig_act;
 	sigemptyset( &sig_act.sa_mask);
 	sig_act.sa_flags = SA_SIGINFO;
-	sig_act.sa_sigaction = signal_Handler;
+	sig_act.sa_sigaction = signal_handler;
 	if( sigaction( SIGTIMER, &sig_act, NULL) == -1){ perror( "\nSIGTIMER SIGACTION FAIL: "); exit( -1); }
 	if( sigaction( SIGINT, &sig_act, NULL) == -1){ perror( "\nSIGINT SIGACTION FAIL: "); exit( -1); }
+	set_timer( SIGTIMER, 100);
+}
 
-	set_Timer( SIGTIMER, 100);
+
+
+// @@@@@@@@@@@@@@@@@@@@@@@
+// @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+// @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+// @@@@@@@@@@@@@@@@@@@@@@@ Main function
+
+int main(){
+	bp_t *bp = bp_init();
+	pthread_t da_thread, bp_thread;
+
+	bp_process_data( bp);
+	
+	set_signal();
+	
 	while( 1){ pause(); };
 	pthread_join( da_thread, NULL); pthread_join( bp_thread, NULL);
-	pthread_mutex_destroy( &mutex);
-	deleteQ( queue);
-	free( arg);
+	
+	bp_destroy( bp);
 }
